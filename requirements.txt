@@ -1,0 +1,36 @@
+# Django and Core Dependencies
+Django==5.1.2
+djangorestframework==3.15.1
+djangorestframework-simplejwt==5.3.1
+django-cors-headers==4.3.1
+
+# Database
+mysqlclient==2.2.0
+# Alternative MySQL driver (if mysqlclient doesn't work):
+# PyMySQL==1.1.0
+
+# Image Processing (for file uploads and image handling)
+Pillow==10.2.0
+
+# Utilities
+python-dateutil==2.8.2
+
+# Security
+cryptography==42.0.5
+
+# Environment Variables (if using .env files)
+python-dotenv==1.0.0
+
+# Email (built into Django, but may need additional packages for advanced features)
+# For Gmail SMTP, no additional packages needed
+
+# Optional: For production deployment
+# gunicorn==21.2.0
+# whitenoise==6.6.0
+
+# Optional: For database migrations and management
+# django-extensions==3.2.3
+
+# Optional: For API documentation
+# drf-yasg==1.21.7
+
