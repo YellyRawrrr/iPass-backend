@@ -27,7 +27,11 @@ SECRET_KEY = 'django-insecure-qg3u#489w(=7fyw)0q*)ijm^g069c$o*@9ny2xs%g*j8!=mgt%
 
 DEBUG = False
 
-ALLOWED_HOSTS = [ "localhost", "127.0.0.1", "172.17.20.100", "192.168.1.191", '*']
+ALLOWED_HOSTS = [
+    "localhost", 
+    "127.0.0.1", 
+    "affectionate-renewal-production-9878.up.railway.app" # Clean domain only
+]
 
 
 # Application definition
