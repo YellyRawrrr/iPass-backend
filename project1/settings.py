@@ -113,6 +113,10 @@ REST_FRAMEWORK = {
     ),
 }   
 
+CSRF_TRUSTED_ORIGINS = [
+    "https://affectionate-renewal-production-9878.up.railway.app",
+]
+
 STORAGES = {
     "default": {
         "BACKEND": "django.core.files.storage.FileSystemStorage",
