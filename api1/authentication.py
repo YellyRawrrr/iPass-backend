@@ -20,8 +20,8 @@ class CookieJWTAuthentication(JWTAuthentication):
                     return None
                     
                 return user, validated_token
-            except (InvalidToken, TokenError) as e:
-                print(f"JWT Token validation error from header: {e}")
+            except (InvalidToken, TokenError):
+                pass
                 # Fall through to cookie authentication
         
         # Fallback to cookie authentication
@@ -40,9 +40,7 @@ class CookieJWTAuthentication(JWTAuthentication):
                 return None
                 
             return user, validated_token
-        except (InvalidToken, TokenError) as e:
-            print(f"JWT Token validation error from cookie: {e}")
+        except (InvalidToken, TokenError):
             return None
-        except Exception as e:
-            print(f"Unexpected error in JWT authentication: {e}")
+        except Exception:
             return None 

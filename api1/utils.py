@@ -30,18 +30,18 @@ def build_status_map():
     return base_map
 
 APPROVAL_CHAIN_MAP = {
-    'urdaneta_csc': ['urdaneta_csc', 'pangasinan_po', 'tmsd', 'afsd', 'regional'],
-    'sison_csc': ['sison_csc', 'pangasinan_po', 'tmsd', 'afsd', 'regional'],
-    'pugo_csc': ['pugo_csc', 'launion_po', 'tmsd', 'afsd', 'regional'],
-    'sudipen_csc': ['sudipen_csc', 'launion_po', 'tmsd', 'afsd', 'regional'],
-    'tagudin_csc': ['tagudin_csc', 'ilocossur_po', 'tmsd', 'afsd', 'regional'],
-    'banayoyo_csc': ['banayoyo_csc', 'ilocossur_po', 'tmsd', 'afsd', 'regional'],
-    'dingras_csc': ['dingras_csc', 'ilocosnorte_po', 'tmsd', 'afsd', 'regional'],
+    'urdaneta_csc': ['urdaneta_csc', 'pangasinan_po', 'afsd', 'regional'],
+    'sison_csc': ['sison_csc', 'pangasinan_po', 'afsd', 'regional'],
+    'pugo_csc': ['pugo_csc', 'launion_po', 'afsd', 'regional'],
+    'sudipen_csc': ['sudipen_csc', 'launion_po', 'afsd', 'regional'],
+    'tagudin_csc': ['tagudin_csc', 'ilocossur_po', 'afsd', 'regional'],
+    'banayoyo_csc': ['banayoyo_csc', 'ilocossur_po', 'afsd', 'regional'],
+    'dingras_csc': ['dingras_csc', 'ilocosnorte_po', 'afsd', 'regional'],
 
-    'pangasinan_po': ['pangasinan_po', 'tmsd', 'afsd', 'regional'],
-    'ilocossur_po': ['ilocossur_po', 'tmsd', 'afsd', 'regional'],
-    'ilocosnorte_po': ['ilocosnorte_po', 'tmsd', 'afsd', 'regional'],
-    'launion_po': ['launion_po', 'tmsd', 'afsd', 'regional'],
+    'pangasinan_po': ['pangasinan_po', 'afsd', 'regional'],
+    'ilocossur_po': ['ilocossur_po', 'afsd', 'regional'],
+    'ilocosnorte_po': ['ilocosnorte_po', 'afsd', 'regional'],
+    'launion_po': ['launion_po', 'afsd', 'regional'],
 
     'tmsd': ['tmsd','afsd', 'regional'],
     'afsd': ['afsd', 'regional'],
@@ -54,76 +54,76 @@ def get_approval_chain(user):
     """
 
     if user.user_level == 'director':
-        # Director cannot file travel orders
+        
         return []
 
     # CSC Employee
     if user.employee_type == 'urdaneta_csc':
         if user.user_level == 'head':
-            return ['pangasinan_po', 'tmsd', 'afsd', 'regional']
+            return ['pangasinan_po', 'afsd', 'regional']
         else:
-            return ['urdaneta_csc', 'pangasinan_po', 'tmsd', 'afsd', 'regional']
+            return ['urdaneta_csc', 'pangasinan_po', 'afsd', 'regional']
         
     if user.employee_type == 'sison_csc':
         if user.user_level == 'head':
-            return ['pangasinan_po', 'tmsd', 'afsd', 'regional']
+            return ['pangasinan_po', 'afsd', 'regional']
         else:
-            return ['sison_csc', 'pangasinan_po', 'tmsd', 'afsd', 'regional']
+            return ['sison_csc', 'pangasinan_po', 'afsd', 'regional']
 
     if user.employee_type == 'pugo_csc':
         if user.user_level == 'head':
-            return ['launion_po', 'tmsd', 'afsd', 'regional']
+            return ['launion_po', 'afsd', 'regional']
         else:
-            return ['pugo_csc', 'launion_po', 'tmsd', 'afsd', 'regional']
+            return ['pugo_csc', 'launion_po', 'afsd', 'regional']
 
     if user.employee_type == 'sudipen_csc':
         if user.user_level == 'head':
-            return ['launion_po', 'tmsd', 'afsd', 'regional']
+            return ['launion_po', 'afsd', 'regional']
         else:
-            return ['sudipen_csc', 'launion_po', 'tmsd', 'afsd', 'regional']
+            return ['sudipen_csc', 'launion_po', 'afsd', 'regional']
                             
     if user.employee_type == 'tagudin_csc':
         if user.user_level == 'head':
-            return ['ilocossur_po', 'tmsd', 'afsd', 'regional']
+            return ['ilocossur_po', 'afsd', 'regional']
         else:
-            return ['tagudin_csc', 'ilocossur_po', 'tmsd', 'afsd', 'regional']
+            return ['tagudin_csc', 'ilocossur_po', 'afsd', 'regional']
 
     if user.employee_type == 'banayoyo_csc':
         if user.user_level == 'head':
-            return ['ilocossur_po', 'tmsd', 'afsd', 'regional']
+            return ['ilocossur_po', 'afsd', 'regional']
         else:
-            return ['banayoyo_csc', 'ilocossur_po', 'tmsd', 'afsd', 'regional']
+            return ['banayoyo_csc', 'ilocossur_po', 'afsd', 'regional']
         
     if user.employee_type == 'dingras_csc':
         if user.user_level == 'head':
-            return ['ilocosnorte_po', 'tmsd', 'afsd', 'regional']
+            return ['ilocosnorte_po', 'afsd', 'regional']
         else:
-            return ['dingras_csc', 'ilocosnorte_po', 'tmsd', 'afsd', 'regional']                        
+            return ['dingras_csc', 'ilocosnorte_po', 'afsd', 'regional']                        
 
     # PO Employee
     if user.employee_type == 'pangasinan_po':
         if user.user_level == 'head':
-            return ['tmsd', 'afsd', 'regional']
+            return ['afsd', 'regional']
         else:
-            return ['pangasinan_po', 'tmsd', 'afsd', 'regional']
+            return ['pangasinan_po', 'afsd', 'regional']
         
     if user.employee_type == 'ilocossur_po':
         if user.user_level == 'head':
-            return ['tmsd', 'afsd', 'regional']
+            return ['afsd', 'regional']
         else:
-            return ['ilocossur_po', 'tmsd', 'afsd', 'regional']
+            return ['ilocossur_po', 'afsd', 'regional']
 
     if user.employee_type == 'ilocosnorte_po':
         if user.user_level == 'head':
-            return ['tmsd', 'afsd', 'regional']
+            return ['afsd', 'regional']
         else:
-            return ['ilocosnorte_po', 'tmsd', 'afsd', 'regional']
+            return ['ilocosnorte_po', 'afsd', 'regional']
 
     if user.employee_type == 'launion_po':
         if user.user_level == 'head':
-            return ['tmsd', 'afsd', 'regional']
+            return ['afsd', 'regional']
         else:
-            return ['launion_po', 'tmsd', 'afsd', 'regional']                        
+            return ['launion_po', 'afsd', 'regional']                        
 
     # TMSD Employee
     if user.employee_type == 'tmsd':
@@ -138,7 +138,7 @@ def get_approval_chain(user):
 
     # Regional Employee (non-director)
     if user.employee_type == 'regional':
-        return ['regional']
+        return ['afsd', 'regional']
 
     # Fallback
     return []
@@ -175,6 +175,69 @@ def get_next_head(chain, stage, current_user=None):
 
 
 
+
+
+def get_left_signatory_by_type(employee_type, user_level='employee'):
+    """
+    Returns (show_left, name, position) for the left signatory block in the Travel Order PDF.
+    Rules:
+      - sison_csc / urdaneta_csc (emp+head), pangasinan_po (emp) → Pangasinan PO Head
+      - pugo_csc / sudipen_csc (emp+head), launion_po (emp)       → La Union PO Head
+      - tagudin_csc / banayoyo_csc (emp+head), ilocossur_po (emp) → Ilocos Sur PO Head
+      - dingras_csc (emp+head), ilocosnorte_po (emp)              → Ilocos Norte PO Head
+      - tmsd (emp+head), afsd (emp only)                          → AFSD Head
+      - afsd head, regional                                        → no left signatory
+    """
+    try:
+        # No left signatory for afsd chief or regional users
+        if employee_type == 'regional':
+            return False, '', ''
+        if employee_type == 'afsd' and user_level == 'head':
+            return False, '', ''
+
+        # Map filer type to head type
+        if employee_type in ('sison_csc', 'urdaneta_csc', 'pangasinan_po'):
+            head_type = 'pangasinan_po'
+        elif employee_type in ('pugo_csc', 'sudipen_csc', 'launion_po'):
+            head_type = 'launion_po'
+        elif employee_type in ('tagudin_csc', 'banayoyo_csc', 'ilocossur_po'):
+            head_type = 'ilocossur_po'
+        elif employee_type in ('dingras_csc', 'ilocosnorte_po'):
+            head_type = 'ilocosnorte_po'
+        elif employee_type in ('tmsd', 'afsd'):
+            head_type = 'afsd'
+        else:
+            return False, '', ''
+
+        head = CustomUser.objects.select_related('employee_position').filter(
+            employee_type=head_type, user_level='head'
+        ).first()
+
+        if head:
+            name = getattr(head, 'full_name', None) or head.get_full_name() or ''
+            position = head.employee_position.position_name if head.employee_position else ''
+            return True, name, position
+    except Exception:
+        pass
+    return False, '', ''
+
+
+def get_regional_director_for_pdf():
+    """
+    Returns (full_name, position_name) of the Regional Director user,
+    or ('', '') if none is found.
+    """
+    try:
+        director = CustomUser.objects.select_related('employee_position').filter(user_level='director').first()
+        if director:
+            name = getattr(director, 'full_name', None) or director.get_full_name() or ''
+            position = ''
+            if director.employee_position:
+                position = director.employee_position.position_name or ''
+            return name, position
+    except Exception:
+        pass
+    return '', ''
 
 
 def generate_travel_order_number(original_number=None):

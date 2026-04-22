@@ -10,8 +10,6 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.1/ref/settings/
 """
 
-import dj_database_url
-import os 
 from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -24,17 +22,10 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = 'django-insecure-qg3u#489w(=7fyw)0q*)ijm^g069c$o*@9ny2xs%g*j8!=mgt%'
 
-# SECURITY WARNING: don't run with debug turned on in production!
+
 DEBUG = True
 
-ALLOWED_HOSTS = [
-    'localhost',
-    '127.0.0.1',
-    '.onrender.com',
-]
-
-STATIC_URL = 'static/'
-STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
+ALLOWED_HOSTS = [ "localhost", "127.0.0.1", "172.17.20.100", "192.168.1.191", '*']
 
 
 # Application definition
@@ -55,7 +46,6 @@ INSTALLED_APPS = [
 
 
 MIDDLEWARE = [
-    'whitenoise.middleware.WhiteNoiseMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
@@ -73,11 +63,11 @@ ROOT_URLCONF = 'project1.urls'
 CORS_ALLOW_CREDENTIALS = True
 
 CORS_ALLOWED_ORIGINS = [
-    "http://localhost:5173",
+    "http://localhost:5173", "http://172.17.20.100:5173"
 ]
 
-# Allow media files to be accessed from frontend
-CORS_ALLOW_ALL_ORIGINS = False  # Keep this False for security
+
+CORS_ALLOW_ALL_ORIGINS = True 
 CORS_ALLOW_HEADERS = [
     'accept',
     'accept-encoding',
@@ -139,17 +129,25 @@ WSGI_APPLICATION = 'project1.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
-        'NAME':'capstone',
-        'USER':'root',
-        'PASSWORD': '',
-        'HOST': 'localhost',
-        'PORT': '3306',
+        'NAME': os.environ.get('MYSQLDATABASE'),
+        'USER': os.environ.get('MYSQLUSER'),
+        'PASSWORD': os.environ.get('MYSQLPASSWORD'),
+        'HOST': os.environ.get('MYSQLHOST'),
+        'PORT': os.environ.get('MYSQLPORT'),
     }
 }
 
-DATABASES["default"] = dj_database_url.parse("postgresql://ipass_postgresql_user:RmF8X5tTomq3abscMZFN9kGvp15wecrK@dpg-d60m35ffte5s73b8e8qg-a.virginia-postgres.render.com/ipass_postgresql")
+#DATABASES = {
+#    'default': {
+#        'ENGINE': 'django.db.backends.mysql',
+#        'NAME':'ipassdb',
+#        'USER':'root',
+#        'PASSWORD': '',
+#        'HOST': 'localhost',
+#        'PORT': '3306',
+#    }
+#}
 
-# postgresql://ipass_postgresql_user:RmF8X5tTomq3abscMZFN9kGvp15wecrK@dpg-d60m35ffte5s73b8e8qg-a.virginia-postgres.render.com/ipass_postgresql
 
 # Password validation
 # https://docs.djangoproject.com/en/5.1/ref/settings/#auth-password-validators
@@ -199,8 +197,8 @@ MEDIA_ROOT = BASE_DIR / 'media'
 AUTH_USER_MODEL = 'api1.CustomUser'
 
 # File upload settings
-FILE_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024  # 10MB
-DATA_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024  # 10MB
+FILE_UPLOAD_MAX_MEMORY_SIZE = 50 * 1024 * 1024  
+DATA_UPLOAD_MAX_MEMORY_SIZE = 50 * 1024 * 1024  
 DATA_UPLOAD_MAX_NUMBER_FIELDS = 1000
 
 # Security settings for iframe embedding
@@ -215,9 +213,8 @@ EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 EMAIL_HOST = 'smtp.gmail.com'
 EMAIL_PORT = 587
 EMAIL_USE_TLS = True
-EMAIL_HOST_USER = 'jezterrosario02@gmail.com'  # Replace with your actual Gmail
-EMAIL_HOST_PASSWORD = 'fqod ttpb ltwt vqqh'  # Replace with your Gmail App Password
-DEFAULT_FROM_EMAIL = 'jezterrosario02@gmail.com'  # Replace with your actual Gmail
-
+EMAIL_HOST_USER = 'jezterrosario02@gmail.com'  # Gmail
+EMAIL_HOST_PASSWORD = 'fqod ttpb ltwt vqqh'  # Gmail App Password
+DEFAULT_FROM_EMAIL = 'jezterrosario02@gmail.com'  # Gmail
 
 

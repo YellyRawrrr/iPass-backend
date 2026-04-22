@@ -16,14 +16,14 @@ def generate_temporary_password():
 def send_user_creation_email(user, temporary_password):
     """Send email to new user with their credentials and temporary password"""
     try:
-        subject = "Account Credentials for the IPass:Travel Order System"
+        subject = "Account Credentials for the iPass:Travel Order System"
         
         message = f"""
 Dear {user.first_name or user.email},
 
 Greetings!
 
-We are pleased to inform you that your account for the IPass:Travel Order System has been successfully created. Please find your login details below:
+We are pleased to inform you that your account for the iPass:Travel Order System has been successfully created. Please find your login details below:
 
 Email: {user.email}
 Temporary Password: {temporary_password}
@@ -34,14 +34,14 @@ Important Reminders:
 
 
 Login Instructions:
-1. Access the IPass:Travel Order System.
+1. Access the iPass:Travel Order System.
 2. Enter your registered email address and the temporary password provided above.
 3. You will be prompted to create a new password upon logging in.
 4. Please ensure that your new password is strong and confidential.
 
 Should you have any concerns or require assistance, you may contact your system administrator for support.
 
-Thank you and welcome to the IPass:Travel Order System.
+Thank you and welcome to the iPass:Travel Order System.
 
 Best regards,
 National Commisions on Indigenous Peoples Regional Office 1-ICT
@@ -67,7 +67,7 @@ def send_notification_email(user, travel_order, notification_type, title, messag
         user_name = user.get_full_name() or user.email
         
         # Email subject
-        subject = f"NCIP Travel Management - {title}"
+        subject = f"NCIP Region I - {title}"
         
         # Create email body based on notification type
         email_body = create_notification_email_body(
@@ -107,19 +107,19 @@ Travel Request Details:
     # Add action-specific content
     if notification_type == 'new_approval_needed':
         action_content = """
-Action Required: Please log in to the NCIP Travel Management System to review and approve this travel request.
+Kindly access the NCIP Travel Order System to review and take appropriate action on the submitted travel request.
 """
     elif notification_type in ['travel_approved', 'travel_final_approved']:
         action_content = """
-Status: Your travel request has been approved. You may now proceed with your travel plans.
+    Your travel request has been approved.
 """
     elif notification_type in ['travel_rejected', 'liquidation_rejected', 'component_rejected']:
         action_content = """
-Action Required: Please review the rejection details and take necessary action. You may resubmit your request if needed.
+Kindly review the rejection details and make the required adjustments. The request may be resubmitted for further consideration.
 """
     elif notification_type == 'travel_rejected_by_next_approver':
         action_content = """
-Status: A travel request you previously approved has been rejected by a later approver. Please review the details.
+The travel request you previously approved has been rejected.
 """
     elif notification_type in ['liquidation_approved', 'component_approved']:
         # Add final amount information if liquidation is provided

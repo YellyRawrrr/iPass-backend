@@ -117,8 +117,8 @@ class TravelOrder(models.Model):
     ]
 
     FUND_CLUSTER = [
-        ('01_RF','01_RF'),
-        ('07_TF','07_TF')
+        ('01-RF','01-RF'),
+        ('07-TF','07-TF')
     ]
 
 
@@ -160,6 +160,18 @@ class TravelOrder(models.Model):
     rejected_by = models.ForeignKey(CustomUser,null=True, blank=True, on_delete=models.SET_NULL, related_name='rejected_orders')
     is_resubmitted = models.BooleanField(default=False)
     is_draft = models.BooleanField(default=False, help_text='True if this is a draft, False if submitted for approval')
+
+    DIRECTOR_TRAVEL_CLASSIFICATION = [
+        ('official_time', 'On Official Time'),
+        ('official_business', 'On Official Business'),
+    ]
+    director_travel_classification = models.CharField(
+        max_length=32,
+        choices=DIRECTOR_TRAVEL_CLASSIFICATION,
+        blank=True,
+        null=True,
+        help_text='Set by Regional Director on final approval',
+    )
 
     submitted_at = models.DateTimeField(auto_now_add=True)
 
@@ -269,8 +281,8 @@ class CertificateOfTravel(models.Model):
     ]
 
     FUND_CLUSTER_CHOICES = [
-        ('01_RF', '01-RF'),
-        ('07_TF', '07-TF'),
+        ('01-RF', '01-RF'),
+        ('07-TF', '07-TF'),
     ]
 
     DEVIATION_CHOICES = [
@@ -293,6 +305,7 @@ class CertificateOfTravel(models.Model):
     date_travel_from = models.DateField(null=True, blank=True)
     date_travel_to = models.DateField(null=True, blank=True)
     respectfully_submitted = models.ManyToManyField(CustomUser, related_name='certificate_of_travel_submitted', blank=True)
+    recommending_approval = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='certificate_of_travel_recommending')
     approved = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='certificate_of_travel_approved')
     
     # Deviation tracking fields
@@ -421,32 +434,25 @@ class Liquidation(models.Model):
     status = models.CharField(max_length=50, choices=LIQUIDATION_STATUSES, default='Pending')
 
     def update_status(self):
-        print(f"DEBUG: update_status called for liquidation {self.id}")
         
         # Get all submitted components (not None/empty)
         submitted_components = []
         try:
             if self.after_travel_report:
                 submitted_components.append(self.after_travel_report_status)
-                print(f"DEBUG: ATR status: {self.after_travel_report_status}")
             if self.certificate_of_travel:
                 submitted_components.append(self.certificate_of_travel_status)
-                print(f"DEBUG: COT status: {self.certificate_of_travel_status}")
             if self.certificate_of_appearance:
                 submitted_components.append(self.certificate_of_appearance_status)
-                print(f"DEBUG: COA status: {self.certificate_of_appearance_status}")
         except AttributeError as e:
-            print(f"DEBUG: AttributeError in update_status: {e}")
             # If fields don't exist, just return without changing status
             return
         
-        print(f"DEBUG: Submitted components statuses: {submitted_components}")
         
         # If no components are submitted yet, keep as Pending
         if not submitted_components:
             self.status = 'Pending'
             self.save()
-            print("DEBUG: No submitted components, set to Pending")
             return
         
         # Check if all submitted components are approved by accountant
@@ -473,40 +479,29 @@ class Liquidation(models.Model):
         # Check if any component has been approved by accountant (but not all)
         any_accountant_approved = any(status == 'accountant_approved' for status in submitted_components)
         
-        print(f"DEBUG: Status checks - all_approved: {all_approved}, any_rejected: {any_rejected}, all_bookkeeper_approved: {all_bookkeeper_approved}, any_bookkeeper_rejected: {any_bookkeeper_rejected}, all_reviewer_approved: {all_reviewer_approved}, any_reviewer_rejected: {any_reviewer_rejected}, all_pending: {all_pending}, any_accountant_approved: {any_accountant_approved}")
         
         if all_approved:
             self.status = 'Ready for Claim'
-            print("DEBUG: Set status to Ready for Claim")
         elif any_rejected:
             self.status = 'Rejected'
-            print("DEBUG: Set status to Rejected")
         elif any_accountant_approved and not all_approved:
             # Some components approved by accountant but not all - keep as Under Final Audit
             self.status = 'Under Final Audit'
-            print("DEBUG: Set status to Under Final Audit (some accountant approved, not all)")
         elif all_bookkeeper_approved:
             self.status = 'Under Final Audit'
-            print("DEBUG: Set status to Under Final Audit")
         elif any_bookkeeper_rejected:
             self.status = 'Under Pre-Audit'
-            print("DEBUG: Set status to Under Pre-Audit")
         elif all_reviewer_approved:
             self.status = 'Under Pre-Audit'
-            print("DEBUG: Set status to Under Pre-Audit (reviewer approved, ready for bookkeeper)")
         elif any_reviewer_rejected:
             self.status = 'Rejected'
-            print("DEBUG: Set status to Rejected (reviewer rejected)")
         elif not all_pending:
             # Some components have been reviewed, set to Under Pre-Audit
             self.status = 'Under Pre-Audit'
-            print("DEBUG: Set status to Under Pre-Audit (some reviewed)")
         else:
             # Components are submitted but still pending review - set to Pending
             self.status = 'Pending'
-            print("DEBUG: Set status to Pending (components submitted, waiting for reviewer)")
         self.save()
-        print(f"DEBUG: Final status: {self.status}")
     
     def get_component_status_summary(self):
         """Get a summary of all component statuses"""

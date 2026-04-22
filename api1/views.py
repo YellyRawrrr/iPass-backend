@@ -20,7 +20,7 @@ from django.utils.timezone import now
 from .models import TravelOrder, Signature, CustomUser, Fund, Transportation, EmployeePosition, Purpose, SpecificRole, Liquidation, EmployeeSignature, Itinerary, Notification, AfterTravelReport, CertificateOfTravel, CertificateOfAppearance, AuditLog, Backup, Restore, TravelOrderApprovalSnapshot, TemporaryPassword
 from django.contrib.auth import get_user_model
 from .serializers import TravelOrderSerializer, UserSerializer, FundSerializer, TransportationSerializer, EmployeePositionSerializer, PurposeSerializer, SpecificRoleSerializer, LiquidationSerializer, ItinerarySerializer, TravelOrderSimpleSerializer, TravelOrderReportSerializer, NotificationSerializer, AfterTravelReportSerializer, CertificateOfTravelSerializer, CertificateOfAppearanceSerializer, AuditLogSerializer, BackupSerializer, RestoreSerializer, EmployeeSignatureSerializer
-from .utils import get_approval_chain, get_next_head, build_status_map
+from .utils import get_approval_chain, get_next_head, build_status_map, get_regional_director_for_pdf, get_left_signatory_by_type
 from .email_service import send_notification_email, send_bulk_notification_emails, generate_temporary_password, send_user_creation_email
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.decorators import api_view, permission_classes
@@ -245,13 +245,7 @@ class TravelOrderCreateView(APIView):
     def post(self, request):
         user = request.user
         
-        # Debug: Raw request data
-        print("=== RAW REQUEST DATA ===")
-        print(f"request.data keys: {list(request.data.keys())}")
-        print(f"request.FILES keys: {list(request.FILES.keys())}")
-        for key, value in request.data.items():
-            if key in ['employees', 'itinerary']:
-                print(f"{key}: {value} (type: {type(value)})")
+        
         
         # Get approval chain
         approval_chain = get_approval_chain(user)
@@ -299,7 +293,34 @@ class TravelOrderCreateView(APIView):
         # Check if this is an amendment (creates new order with Amending- prefix)
         is_amend = data.get('mode', '').lower() == 'amend'
         original_travel_order_number = data.get('original_travel_order_number')
-        print(f"DEBUG POST: is_amend = {is_amend}, original_travel_order_number = {original_travel_order_number}")
+
+        # Enforce amendment rule: only allow amendments once the original order
+        # has been approved by the Regional Director.
+        if is_amend and original_travel_order_number:
+            original_order = TravelOrder.objects.filter(
+                travel_order_number=original_travel_order_number
+            ).first()
+            if not original_order:
+                return Response(
+                    {'error': 'Original travel order not found for amendment.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # Prevent amending an already-amended (Amending-*) travel order.
+            if str(original_travel_order_number).startswith('Amending-'):
+                return Response(
+                    {'error': 'This travel order is already an amendment and cannot be amended again.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            if 'approved by the regional director' not in str(original_order.status).lower():
+                return Response(
+                    {
+                        'error': 'You can only amend a travel order after it is approved by the Regional Director.'
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+        
         
         # Clean up itinerary data for drafts: convert empty strings to None
         if is_draft and 'itinerary' in data:
@@ -337,8 +358,7 @@ class TravelOrderCreateView(APIView):
             data['current_approver'] = None
             data['approval_stage'] = 0
 
-        # Debug: Final data being validated
-        print(f"FINAL VALIDATION DATA: {dict(data)}")
+       
         
         # Validate and save
         serializer = TravelOrderSerializer(data=data)
@@ -352,40 +372,49 @@ class TravelOrderCreateView(APIView):
             travel_order = serializer.save(**save_kwargs)
             travel_order.number_of_employees = travel_order.employees.count()
 
-            # For amendments, store the original travel order number in approver_selection
-            # Don't set "Amending-" prefix yet - that will be done when Regional Director approves
-            # BUT: Directors always get a number immediately, even for amendments
+            # For amendments, store the original travel order number in approver_selection.
+            # Previously the "Amending-" travel order number was assigned only at RD final approval.
+            # Now we generate the amended travel order number right when the amendment is submitted.
             if is_amend and original_travel_order_number and not is_draft:
                 # Store original number in approver_selection for later use when RD approves
                 if not travel_order.approver_selection:
                     travel_order.approver_selection = {}
                 travel_order.approver_selection['original_travel_order_number_for_amendment'] = original_travel_order_number
-                
-                # If director creates amendment, they get a regular number immediately (no "Amending-" prefix)
-                # If non-director creates amendment, keep number as None until RD approves
+
+                from .utils import generate_travel_order_number
+                travel_order.travel_order_number = generate_travel_order_number(
+                    original_number=original_travel_order_number
+                )
+
+                # Directors bypass approval workflow; non-directors keep the workflow already set above.
                 if user.user_level == 'director':
-                    from .utils import generate_travel_order_number
-                    travel_order.travel_order_number = generate_travel_order_number()
                     travel_order.current_approver = None
                     travel_order.approval_stage = 0
                     travel_order.status = "Travel request is placed"
-                    travel_order.save(update_fields=['approver_selection', 'travel_order_number', 'current_approver', 'approval_stage', 'status'])
-                    print(f"DEBUG POST: Director created amendment. Generated travel_order_number: {travel_order.travel_order_number}")
+
+                    travel_order.save(
+                        update_fields=[
+                            'approver_selection',
+                            'travel_order_number',
+                            'current_approver',
+                            'approval_stage',
+                            'status',
+                        ]
+                    )
                 else:
-                    # Keep travel_order_number as None - will be set to "Amending-{original}" when RD approves
-                    travel_order.travel_order_number = None
                     travel_order.save(update_fields=['approver_selection', 'travel_order_number'])
-                    print(f"DEBUG POST: Amendment detected. Stored original_travel_order_number: {original_travel_order_number}")
+                    
             else:
-                # 🔑 Director → auto-generate travel order number (only for non-drafts)
-                if user.user_level == 'director' and not is_draft:
+                # Generate travel order number at filing time for all non-draft submissions
+                if not is_draft:
                     from .utils import generate_travel_order_number
                     travel_order.travel_order_number = generate_travel_order_number()
-                    # No approvers needed
-                    travel_order.current_approver = None
-                    travel_order.approval_stage = 0
-                    travel_order.status = "Travel request is placed"
-                
+                    if user.user_level == 'director':
+                        # No approvers needed for directors
+                        travel_order.current_approver = None
+                        travel_order.approval_stage = 0
+                        travel_order.status = "Travel request is placed"
+
                 travel_order.save()
 
             # Handle signature photo
@@ -416,14 +445,12 @@ class TravelOrderCreateView(APIView):
                     user=travel_order.current_approver,
                     travel_order=travel_order,
                     notification_type='new_approval_needed',
-                    title=f'New Travel Request for Approval',
+                    title=f'New Travel Request Pending Approval',
                     message=f'Travel request to {travel_order.destination} by {user.get_full_name()} needs your approval.'
                 )
 
-            print("SUCCESS: Travel order created")
             return Response(TravelOrderSerializer(travel_order).data, status=status.HTTP_201_CREATED)
 
-        print(f"VALIDATION ERRORS: {serializer.errors}")
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -473,8 +500,43 @@ class TravelOrderDetailUpdateView(APIView):
         
         # Check if this is an amendment
         is_amend = data.get('mode', '').lower() == 'amend'
-        print(f"DEBUG: is_amend = {is_amend}, mode = {data.get('mode')}")
-        print(f"DEBUG: order.travel_order_number = {order.travel_order_number}")
+
+        # Enforce amendment rule:
+        # amendments are allowed only when the ORIGINAL order is approved by the RD.
+        if is_amend:
+            original_travel_order_number_from_data = data.get('original_travel_order_number')
+            if original_travel_order_number_from_data:
+                original_order = TravelOrder.objects.filter(
+                    travel_order_number=original_travel_order_number_from_data
+                ).first()
+                if not original_order:
+                    return Response(
+                        {'error': 'Original travel order not found for amendment.'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+                # Prevent amending an already-amended (Amending-*) travel order.
+                if str(original_travel_order_number_from_data).startswith('Amending-'):
+                    return Response(
+                        {'error': 'This travel order is already an amendment and cannot be amended again.'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+                if 'approved by the regional director' not in str(original_order.status).lower():
+                    return Response(
+                        {
+                            'error': 'You can only amend a travel order after it is approved by the Regional Director.'
+                        },
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+        # Capture order state before any changes for post-save logic
+        was_order_draft = order.is_draft
+        # True when resubmitting a previously submitted (rejected) order
+        is_resubmission_edit = not is_draft and not was_order_draft
+        # True when first submitting an order that was a draft
+        is_first_submit_from_draft = not is_draft and was_order_draft
+       
         
         # Clean up itinerary data for drafts: convert empty strings to None
         if is_draft and 'itinerary' in data:
@@ -509,10 +571,11 @@ class TravelOrderDetailUpdateView(APIView):
             evidence_file = request.FILES.get('evidence')
             
             # Store original travel order number for amendments (before any updates)
+            # Prefer the frontend-provided original_travel_order_number.
             original_travel_order_number = None
-            if is_amend and order.travel_order_number:
-                original_travel_order_number = order.travel_order_number
-                print(f"DEBUG: Amendment detected. Original travel_order_number: {original_travel_order_number}")
+            if is_amend:
+                original_travel_order_number = data.get('original_travel_order_number') or order.travel_order_number
+                
             
             # For drafts, don't reset approval workflow
             if is_draft:
@@ -525,11 +588,10 @@ class TravelOrderDetailUpdateView(APIView):
                 
                 if was_draft:
                     # First-time submission from draft - treat as new submission
-                    # Directors get travel order number immediately
+                    # Generate travel order number at filing time for all users
+                    from .utils import generate_travel_order_number
+                    travel_order_num = order.travel_order_number if order.travel_order_number and not order.travel_order_number.startswith('Amending-') else generate_travel_order_number()
                     if request.user.user_level == 'director':
-                        from .utils import generate_travel_order_number
-                        # Generate new number if not set or if it was set to None (e.g., from amendment logic)
-                        travel_order_num = order.travel_order_number if order.travel_order_number and not order.travel_order_number.startswith('Amending-') else generate_travel_order_number()
                         save_kwargs = {
                             'approval_stage': 0,
                             'current_approver': None,
@@ -545,6 +607,7 @@ class TravelOrderDetailUpdateView(APIView):
                             'is_resubmitted': False,  # Not a resubmission, it's the first submission
                             'status': 'Travel request is placed',  # Normal status for new submission
                             'is_draft': False,
+                            'travel_order_number': travel_order_num,
                         }
                 else:
                     # Resubmission of previously submitted order - treat as resubmission
@@ -572,7 +635,7 @@ class TravelOrderDetailUpdateView(APIView):
                             'rejected_by': None,
                             'rejection_comment': '',
                             'rejected_at': None,
-                            'status': 'Travel Order Resubmitted',  # ✅ Reset status from 'rejected'
+                            'status': 'Travel request is placed',
                             'is_draft': False,
                         }
                     
@@ -584,52 +647,60 @@ class TravelOrderDetailUpdateView(APIView):
                         if not order.approver_selection:
                             order.approver_selection = {}
                         order.approver_selection['original_travel_order_number_for_amendment'] = original_travel_order_number
-                        
-                        # If director creates amendment, they get a regular number immediately (no "Amending-" prefix)
-                        # If non-director creates amendment, keep number as None until RD approves
-                        if request.user.user_level == 'director':
-                            from .utils import generate_travel_order_number
-                            save_kwargs['travel_order_number'] = generate_travel_order_number()
-                            save_kwargs['current_approver'] = None
-                            print(f"DEBUG: Director created amendment. Generated travel_order_number: {save_kwargs['travel_order_number']}")
-                        else:
-                            # Keep travel_order_number as None - will be set to "Amending-{original}" when RD approves
-                            save_kwargs['travel_order_number'] = None
-                        print(f"DEBUG: Amendment detected. Stored original_travel_order_number: {original_travel_order_number}")
+
+                        # Generate the amended travel order number immediately when the amendment is submitted.
+                        from .utils import generate_travel_order_number
+                        save_kwargs['travel_order_number'] = generate_travel_order_number(
+                            original_number=original_travel_order_number
+                        )
+
+                    # Directors bypass approval workflow; non-directors keep the workflow already set above.
+                    if request.user.user_level == 'director':
+                        save_kwargs['current_approver'] = None
+                       
             
             if evidence_file:
                 save_kwargs['evidence'] = evidence_file
-            
-            # Save the serializer first
+            elif data.get('mode_of_filing') and data.get('mode_of_filing') != 'IMMEDIATE':
+                # Clear stored evidence when switching away from IMMEDIATE filing
+                save_kwargs['evidence'] = None
+
             updated_order = serializer.save(**save_kwargs)
             
-            # For directors: ensure they have a travel order number if not set
-            if request.user.user_level == 'director' and not is_draft and not updated_order.travel_order_number:
+
+            if not is_draft and not updated_order.travel_order_number and not (is_amend and original_travel_order_number and request.user.user_level != 'director'):
                 from .utils import generate_travel_order_number
                 updated_order.travel_order_number = generate_travel_order_number()
-                updated_order.current_approver = None
-                updated_order.approval_stage = 0
-                updated_order.status = "Travel request is placed"
-                updated_order.save(update_fields=['travel_order_number', 'current_approver', 'approval_stage', 'status'])
-                print(f"DEBUG: Director travel order updated. Generated travel_order_number: {updated_order.travel_order_number}")
+                save_fields = ['travel_order_number']
+                if request.user.user_level == 'director':
+                    updated_order.current_approver = None
+                    updated_order.approval_stage = 0
+                    updated_order.status = "Travel request is placed"
+                    save_fields += ['current_approver', 'approval_stage', 'status']
+                updated_order.save(update_fields=save_fields)
+               
             
-            # For amendments, ensure the original number is stored in approver_selection
-            # Don't set "Amending-" prefix yet - that will be done when Regional Director approves
-            # BUT: Directors already got their number above, so skip this for directors
-            if is_amend and original_travel_order_number and request.user.user_level != 'director':
+
+            if is_amend and original_travel_order_number:
+                # Ensure approver_selection has the original order reference.
                 if not updated_order.approver_selection:
                     updated_order.approver_selection = {}
                 updated_order.approver_selection['original_travel_order_number_for_amendment'] = original_travel_order_number
-                # Keep travel_order_number as None - will be set to "Amending-{original}" when RD approves
-                if updated_order.travel_order_number and updated_order.travel_order_number.startswith('Amending-'):
-                    updated_order.travel_order_number = None
+
+                # Ensure the amended travel order number exists immediately on submission.
+                from .utils import generate_travel_order_number
+                if not updated_order.travel_order_number or not str(updated_order.travel_order_number).startswith('Amending-'):
+                    updated_order.travel_order_number = generate_travel_order_number(
+                        original_number=original_travel_order_number
+                    )
+
                 updated_order.save(update_fields=['approver_selection', 'travel_order_number'])
-                print(f"DEBUG: Amendment detected. Stored original_travel_order_number: {original_travel_order_number}")
+               
             
             # Handle signature photo for resubmission
             signature_photo = request.FILES.get("signature_photo")
             if signature_photo:
-                print(f"DEBUG: Processing resubmission signature for order {order.id}")
+               
                 EmployeeSignature.objects.update_or_create(
                     order=order,
                     defaults={
@@ -637,7 +708,27 @@ class TravelOrderDetailUpdateView(APIView):
                         "signature_photo": signature_photo
                     }
                 )
-                print(f"DEBUG: Resubmission signature saved successfully")
+
+            # For first-time submission from draft: notify the assigned head
+            if is_first_submit_from_draft and updated_order.current_approver and request.user.user_level != 'director':
+                create_notification(
+                    user=updated_order.current_approver,
+                    travel_order=updated_order,
+                    notification_type='new_approval_needed',
+                    title='New Travel Request Pending Approval',
+                    message=f'Travel request to {updated_order.destination} by {request.user.get_full_name()} needs your approval.'
+                )
+
+            # For resubmission of a rejected order: clear old snapshots and notify the head
+            if is_resubmission_edit and updated_order.current_approver and request.user.user_level != 'director':
+                TravelOrderApprovalSnapshot.objects.filter(travel_order=updated_order).delete()
+                create_notification(
+                    user=updated_order.current_approver,
+                    travel_order=updated_order,
+                    notification_type='new_approval_needed',
+                    title='Travel Request Resubmitted for Approval',
+                    message=f'Travel request to {updated_order.destination} by {request.user.get_full_name()} has been resubmitted and needs your approval.'
+                )
             
             return Response(serializer.data)
         return Response(serializer.errors, status=400)
@@ -843,8 +934,7 @@ class TravelOrderItineraryView(APIView):
         # Get all itineraries for this travel order
         all_itineraries = Itinerary.objects.filter(travel_order__id=travel_order_id).order_by('id')
         
-        # Debug: Log the number of itineraries found
-        print(f"DEBUG: Found {all_itineraries.count()} itineraries for travel order {travel_order_id}")
+        
         
         # Return ALL itineraries for this travel order
         serializer = ItinerarySerializer(all_itineraries, many=True)
@@ -881,17 +971,7 @@ class ApproveTravelOrderView(APIView):
         order = get_object_or_404(TravelOrder, pk=pk)
         user = request.user
 
-        # Debug logging
-        print(f"=== APPROVAL DEBUG ===")
-        print(f"Travel Order ID: {pk}")
-        print(f"Current User ID: {user.id}")
-        print(f"Current User: {user.email}")
-        print(f"Order Current Approver ID: {order.current_approver.id if order.current_approver else None}")
-        print(f"Order Current Approver: {order.current_approver.email if order.current_approver else None}")
-        print(f"Order Status: {order.status}")
-        print(f"Order Approval Stage: {order.approval_stage}")
-        print(f"Are they equal? {order.current_approver == user}")
-        print(f"=====================")
+     
 
         if order.current_approver != user:
             return Response({
@@ -910,6 +990,16 @@ class ApproveTravelOrderView(APIView):
         # Map employee_type to status strings from your STATUS_CHOICES
         status_map = build_status_map()
 
+        director_classification = None
+        if decision == 'approve' and getattr(user, 'user_level', None) == 'director':
+            director_classification = request.data.get('director_travel_classification')
+            if director_classification not in ('official_time', 'official_business'):
+                return Response(
+                    {
+                        'error': 'Regional Director must select either On Official Time or On Official Business before approving.'
+                    },
+                    status=400,
+                )
 
         if decision == 'approve':
             filer = order.prepared_by
@@ -929,24 +1019,18 @@ class ApproveTravelOrderView(APIView):
                 # ✅ Final approval by Regional Director
                 order.current_approver = None
                 order.status = status_map['regional']['approve']
+                order.is_resubmitted = False  # Only clear on final approval
 
-                # ✅ Auto-generate travel order number
-                from .utils import generate_travel_order_number
-                
-                # Check if this is an amendment (has original_travel_order_number stored in approver_selection)
+                # Handle amendment travel order number at final approval
+                # (Regular travel orders already have a number generated at filing time)
                 original_number_for_amendment = None
                 if order.approver_selection and isinstance(order.approver_selection, dict):
                     original_number_for_amendment = order.approver_selection.get('original_travel_order_number_for_amendment')
-                
+
                 if original_number_for_amendment:
                     # This is an amendment - set to "Amending-{original_number}" when RD approves
+                    from .utils import generate_travel_order_number
                     order.travel_order_number = generate_travel_order_number(original_number=original_number_for_amendment)
-                    print(f"DEBUG: Regional Director approved amendment. Set travel_order_number to: {order.travel_order_number}")
-                elif not order.travel_order_number:
-                    # No number set yet and not an amendment, generate a new regular one
-                    order.travel_order_number = generate_travel_order_number()
-
-            order.is_resubmitted = False
 
             if signature_photo:
                 Signature.objects.create(
@@ -996,6 +1080,9 @@ class ApproveTravelOrderView(APIView):
                 approved_itineraries=itineraries_data
             )
 
+            if director_classification:
+                order.director_travel_classification = director_classification
+
             order.save()
             
             # Log approval action
@@ -1007,7 +1094,11 @@ class ApproveTravelOrderView(APIView):
                 resource_name=f"Travel to {order.destination}",
                 description=f'Approved travel order to {order.destination}',
                 request=request,
-                metadata={'status': order.status, 'approval_stage': order.approval_stage}
+                metadata={
+                    'status': order.status,
+                    'approval_stage': order.approval_stage,
+                    'director_travel_classification': director_classification,
+                }
             )
             
             # Notify the employee that their request was approved by this head
@@ -1017,7 +1108,7 @@ class ApproveTravelOrderView(APIView):
                     travel_order=order,
                     notification_type='travel_approved',
                     title=f'Travel Request Approved by {user.get_full_name()}',
-                    message=f'Your travel request to {order.destination} has been approved by {user.get_full_name()}.'
+                    message=f'The travel request to {order.destination} has been approved by {user.get_full_name()}.'
                 )
             
             # If there's a next approver, notify them
@@ -1026,8 +1117,8 @@ class ApproveTravelOrderView(APIView):
                     user=next_head,
                     travel_order=order,
                     notification_type='new_approval_needed',
-                    title=f'New Travel Request for Approval',
-                    message=f'Travel request to {order.destination} by {order.prepared_by.get_full_name()} needs your approval.'
+                    title=f'New Travel Request Pending Approval',
+                    message=f'Travel request to {order.destination} by {order.prepared_by.get_full_name()} is pending your approval.'
                 )
             else:
                 # Final approval - notify the employee again with final approval message
@@ -1036,8 +1127,8 @@ class ApproveTravelOrderView(APIView):
                         user=order.prepared_by,
                         travel_order=order,
                         notification_type='travel_final_approved',
-                        title=f'Travel Request Finally Approved',
-                        message=f'Your travel request to {order.destination} has been finally approved. Travel order number: {order.travel_order_number}'
+                        title=f'Travel Request Officially Approved',
+                        message=f'The travel request to {order.destination} is now approved. Travel Order No.: {order.travel_order_number}.'
                     )
             
             return Response({"message": "Travel order approved."}, status=200)
@@ -1081,7 +1172,7 @@ class ApproveTravelOrderView(APIView):
                     travel_order=order,
                     notification_type='travel_rejected',
                     title=f'Travel Request Rejected',
-                    message=f'Your travel request to {order.destination} has been rejected. Reason: {comment}'
+                    message=f'The travel request to {order.destination} has been rejected. Reason: {comment}. Please review the details, make the necessary corrections, and resubmit your request for approval.'
                 )
             
             # Notify previous approvers that their approved request was rejected
@@ -1127,6 +1218,9 @@ class ResubmitTravelOrderView(APIView):
 
         if not next_head:
             return Response({"error": "No head found to reassign this order to."}, status=400)
+
+        # Delete snapshots from the previous approval round so the PDF shows fresh data
+        TravelOrderApprovalSnapshot.objects.filter(travel_order=order).delete()
 
         # Reset important fields
         order.status = 'Travel request is placed'
@@ -1634,7 +1728,7 @@ class SubmitAfterTravelReportView(APIView):
             try:
                 liquidation.after_travel_report_status = 'pending_review'
             except AttributeError:
-                print("DEBUG: after_travel_report_status field doesn't exist yet")
+                pass
             
             # Set the reviewer for after travel report
             try:
@@ -1642,9 +1736,9 @@ class SubmitAfterTravelReportView(APIView):
                     liquidation.after_travel_report_reviewer = after_travel_report.office_head
                     # Assign the reviewer (already handled by serializer)
                 else:
-                    print("DEBUG: No office_head user selected for after travel report")
+                    pass
             except AttributeError:
-                print("DEBUG: after_travel_report_reviewer field doesn't exist yet")
+                pass
             
             # Save only the essential fields, avoiding foreign key fields entirely
             try:
@@ -1656,12 +1750,10 @@ class SubmitAfterTravelReportView(APIView):
             try:
                 liquidation.update_status()  # Set proper status based on components
             except Exception as e:
-                print(f"DEBUG: update_status failed: {e}")
                 # Fallback: set status manually
                 liquidation.status = 'Pending'
                 liquidation.save()
             
-            print(f"DEBUG: After travel report submitted. Liquidation ID: {liquidation.id}, Status: {liquidation.status}")
             
             # Notify bookkeepers about new after travel report
             try:
@@ -1674,9 +1766,8 @@ class SubmitAfterTravelReportView(APIView):
                         title=f'After Travel Report Submitted',
                         message=f'After travel report for travel order {travel_order.travel_order_number} has been submitted and needs your review.'
                     )
-                print("DEBUG: Bookkeepers notified about new after travel report")
             except Exception as e:
-                print(f"DEBUG: Error notifying bookkeepers: {e}")
+                pass
                 # Don't fail the submission if notification fails
             
             return Response({
@@ -1710,13 +1801,9 @@ class SubmitCertificateOfTravelView(APIView):
             }, status=400)
 
         # Debug: Print received data
-        print("=== CERTIFICATE OF TRAVEL SUBMISSION DEBUG ===")
-        print(f"Request data: {dict(request.data)}")
-        print(f"Request FILES: {dict(request.FILES)}")
         
         # Debug: List available users
         all_users = CustomUser.objects.all().values('id', 'email', 'first_name', 'last_name', 'user_level')
-        print(f"Available users: {list(all_users)}")
 
         # Parse JSON fields and convert to regular dict
         data = dict(request.data)
@@ -1775,6 +1862,17 @@ class SubmitCertificateOfTravelView(APIView):
             except (json.JSONDecodeError, TypeError):
                 return Response({'respectfully_submitted': ['Invalid respectfully_submitted format.']}, status=400)
         
+        # Handle recommending_approval field if it's a list
+        if 'recommending_approval' in data and isinstance(data['recommending_approval'], list) and len(data['recommending_approval']) > 0:
+            data['recommending_approval'] = data['recommending_approval'][0]
+
+        # Validate that the recommending_approval user exists
+        if 'recommending_approval' in data and data['recommending_approval']:
+            try:
+                CustomUser.objects.get(id=data['recommending_approval'])
+            except CustomUser.DoesNotExist:
+                return Response({'error': f'Selected recommending approval user with ID {data["recommending_approval"]} does not exist.'}, status=400)
+
         # Handle approved field if it's a list
         if 'approved' in data and isinstance(data['approved'], list) and len(data['approved']) > 0:
             data['approved'] = data['approved'][0]
@@ -1783,9 +1881,7 @@ class SubmitCertificateOfTravelView(APIView):
         if 'approved' in data and data['approved']:
             try:
                 approved_user = CustomUser.objects.get(id=data['approved'])
-                print(f"DEBUG: Approved user found: {approved_user.email} (ID: {approved_user.id})")
             except CustomUser.DoesNotExist:
-                print(f"DEBUG: User with ID {data['approved']} does not exist")
                 return Response({'error': f'Selected user with ID {data["approved"]} does not exist.'}, status=400)
         
         # Get Regional Director for agency_head only (not for approved)
@@ -1811,7 +1907,6 @@ class SubmitCertificateOfTravelView(APIView):
         # Ensure respectfully_submitted is a flat list of integers
         if 'respectfully_submitted' in data:
             respectfully_submitted = data['respectfully_submitted']
-            print(f"Before final processing: {respectfully_submitted} (type: {type(respectfully_submitted)})")
             
             # Final flattening to ensure it's a flat list
             if isinstance(respectfully_submitted, list):
@@ -1822,11 +1917,9 @@ class SubmitCertificateOfTravelView(APIView):
                     else:
                         flattened.append(item)
                 data['respectfully_submitted'] = flattened
-                print(f"After final processing: {flattened}")
             else:
-                print(f"Unexpected type: {type(respectfully_submitted)}")
+                pass
         
-        print(f"Final data for serializer: {data}")
         
         # Create certificate of travel
         certificate_serializer = CertificateOfTravelSerializer(data=data)
@@ -1858,7 +1951,7 @@ class SubmitCertificateOfTravelView(APIView):
             try:
                 liquidation.certificate_of_travel_status = 'pending_review'
             except AttributeError:
-                print("DEBUG: certificate_of_travel_status field doesn't exist yet")
+                pass
             
             # Set the reviewer for certificate of travel
             try:
@@ -1866,9 +1959,9 @@ class SubmitCertificateOfTravelView(APIView):
                     liquidation.certificate_of_travel_reviewer = certificate_of_travel.approved
                     # Assign the reviewer (already handled by serializer)
                 else:
-                    print("DEBUG: No approved user selected for certificate of travel")
+                    pass
             except AttributeError:
-                print("DEBUG: certificate_of_travel_reviewer field doesn't exist yet")
+                pass
             
             # Save only the essential fields, avoiding foreign key fields entirely
             try:
@@ -1880,7 +1973,6 @@ class SubmitCertificateOfTravelView(APIView):
             try:
                 liquidation.update_status()  # Set proper status based on components
             except Exception as e:
-                print(f"DEBUG: update_status failed: {e}")
                 # Fallback: set status manually
                 liquidation.status = 'Pending'
                 liquidation.save()
@@ -1896,9 +1988,8 @@ class SubmitCertificateOfTravelView(APIView):
                         title=f'Certificate of Travel Submitted',
                         message=f'Certificate of travel for travel order {travel_order.travel_order_number} has been submitted and needs your review.'
                     )
-                print("DEBUG: Bookkeepers notified about new certificate of travel")
             except Exception as e:
-                print(f"DEBUG: Error notifying bookkeepers: {e}")
+                pass
                 # Don't fail the submission if notification fails
             
             return Response({
@@ -1906,7 +1997,6 @@ class SubmitCertificateOfTravelView(APIView):
                 'certificate_of_travel': CertificateOfTravelSerializer(certificate_of_travel).data
             }, status=201)
         else:
-            print(f"Certificate serializer errors: {certificate_serializer.errors}")
             return Response(certificate_serializer.errors, status=400)
 
 
@@ -1993,7 +2083,7 @@ class SubmitCertificateOfAppearanceView(APIView):
         try:
             liquidation.certificate_of_appearance_status = 'submitted'
         except AttributeError:
-            print("DEBUG: certificate_of_appearance_status field doesn't exist yet")
+            pass
         
         # Save only the essential fields, avoiding foreign key fields entirely
         liquidation.save(update_fields=['certificate_of_appearance', 'certificate_of_appearance_status'])
@@ -2005,7 +2095,6 @@ class SubmitCertificateOfAppearanceView(APIView):
         try:
             liquidation.update_status()  # Set proper status based on components
         except Exception as e:
-            print(f"DEBUG: update_status failed: {e}")
             # Fallback: set status manually
             liquidation.status = 'Pending'
             liquidation.save()
@@ -2021,9 +2110,8 @@ class SubmitCertificateOfAppearanceView(APIView):
                     title=f'Certificate of Appearance Submitted',
                     message=f'Certificate of appearance for travel order {travel_order.travel_order_number} has been submitted and needs your review.'
                 )
-            print("DEBUG: Bookkeepers notified about new certificate of appearance")
         except Exception as e:
-            print(f"DEBUG: Error notifying bookkeepers: {e}")
+            pass
             # Don't fail the submission if notification fails
         
         return Response({
@@ -2108,7 +2196,6 @@ class LiquidationReviewerView(APIView):
             return Response(liquidation_data)
         except AttributeError as e:
             # Handle case where new fields don't exist yet
-            print(f"DEBUG: AttributeError in LiquidationReviewerView: {e}")
             return Response([])
 
 
@@ -2165,7 +2252,6 @@ class LiquidationReviewerHistoryView(APIView):
             
             return Response(liquidation_data)
         except AttributeError as e:
-            print(f"DEBUG: AttributeError in LiquidationReviewerHistoryView: {e}")
             return Response([])
 
 
@@ -2229,7 +2315,7 @@ class LiquidationComponentReviewView(APIView):
         try:
             liquidation.update_status()
         except Exception as e:
-            print(f"DEBUG: update_status failed: {e}")
+            pass
         
         # Send notifications
         component_display_name = component_type.replace("_", " ").title()
@@ -2243,15 +2329,13 @@ class LiquidationComponentReviewView(APIView):
                     title=f'{component_display_name} Approved by Reviewer',
                     message=f'Your {component_display_name.lower()} for travel order {liquidation.travel_order.travel_order_number} has been approved by the reviewer.'
                 )
-                print(f"DEBUG: Employee notified of {component_display_name} approval successfully")
             except Exception as e:
-                print(f"DEBUG: Error notifying employee of approval: {e}")
+                pass
                 # Don't fail the approval if notification fails
             
             # Notify bookkeepers that component is ready for their review
             try:
                 bookkeepers = CustomUser.objects.filter(user_level='bookkeeper')
-                print(f"DEBUG: Found {bookkeepers.count()} bookkeepers to notify")
                 for bookkeeper in bookkeepers:
                     create_notification(
                         user=bookkeeper,
@@ -2260,9 +2344,8 @@ class LiquidationComponentReviewView(APIView):
                         title=f'{component_display_name} Ready for Bookkeeper Review',
                         message=f'{component_display_name} for travel order {liquidation.travel_order.travel_order_number} has been approved by reviewer and is ready for bookkeeper review.'
                     )
-                print("DEBUG: Bookkeepers notified successfully")
             except Exception as e:
-                print(f"DEBUG: Error notifying bookkeepers: {e}")
+                pass
                 # Don't fail the approval if notification fails
         else:
             # Notify employee about rejection
@@ -2274,9 +2357,8 @@ class LiquidationComponentReviewView(APIView):
                     title=f'{component_display_name} Rejected by Reviewer',
                     message=f'Your {component_display_name.lower()} for travel order {liquidation.travel_order.travel_order_number} has been rejected by the reviewer. Reason: {comment if comment else "No reason provided"}'
                 )
-                print(f"DEBUG: Employee notified of {component_display_name} rejection successfully")
             except Exception as e:
-                print(f"DEBUG: Error notifying employee of rejection: {e}")
+                pass
                 # Don't fail the rejection if notification fails
         
         action = 'approved' if approve else 'rejected'
@@ -2308,7 +2390,6 @@ class UpdateLiquidationReviewerView(APIView):
             try:
                 reviewer = CustomUser.objects.get(id=after_travel_report_reviewer)
                 liquidation.after_travel_report_reviewer = reviewer
-                print(f"DEBUG: Updated after_travel_report_reviewer to: {reviewer.email}")
             except CustomUser.DoesNotExist:
                 return Response({'error': 'Invalid reviewer ID for after travel report'}, status=400)
         
@@ -2316,7 +2397,6 @@ class UpdateLiquidationReviewerView(APIView):
             try:
                 reviewer = CustomUser.objects.get(id=certificate_of_travel_reviewer)
                 liquidation.certificate_of_travel_reviewer = reviewer
-                print(f"DEBUG: Updated certificate_of_travel_reviewer to: {reviewer.email}")
             except CustomUser.DoesNotExist:
                 return Response({'error': 'Invalid reviewer ID for certificate of travel'}, status=400)
         
@@ -2359,8 +2439,6 @@ class SubmitLiquidationView(APIView):
         after_travel_report_data = request.data.get('after_travel_report')
         after_travel_report = None
         
-        print("=== AFTER TRAVEL REPORT DATA ===")
-        print(f"Raw data: {after_travel_report_data}")
         print(f"Type: {type(after_travel_report_data)}")
         
         if after_travel_report_data:
@@ -2419,9 +2497,6 @@ class SubmitLiquidationView(APIView):
         if after_travel_report:
             liquidation_data['after_travel_report'] = after_travel_report.id
 
-        print("=== LIQUIDATION DATA ===")
-        print(f"Liquidation data: {liquidation_data}")
-        print(f"Files: {list(request.FILES.keys())}")
 
         serializer = LiquidationSerializer(data=liquidation_data)
         if serializer.is_valid():
@@ -2439,13 +2514,11 @@ class SubmitLiquidationView(APIView):
                         title=f'New Liquidation Submitted',
                         message=f'Liquidation for travel order {travel_order.travel_order_number} has been submitted and needs your review.'
                     )
-                print("DEBUG: Bookkeepers notified about new liquidation")
             except Exception as e:
-                print(f"DEBUG: Error notifying bookkeepers: {e}")
+                pass
                 # Don't fail the liquidation creation if notification fails
             
             return Response(serializer.data, status=201)
-        print("=== LIQUIDATION ERRORS ===")
         print(f"Serializer errors: {serializer.errors}")
         return Response(serializer.errors, status=400)
 
@@ -2465,7 +2538,6 @@ class BookkeeperReviewView(APIView):
             
         liquidation = get_object_or_404(Liquidation.objects.select_related('travel_order__purpose', 'travel_order__specific_role'), pk=pk)
         
-        print(f"DEBUG: Bookkeeper review - Liquidation ID: {liquidation.id}, Status: {liquidation.status}")
         
         # Bookkeeper can review any liquidation status
         
@@ -2525,7 +2597,6 @@ class BookkeeperComponentReviewView(APIView):
 
     def patch(self, request, pk, component):
         """Review individual liquidation components"""
-        print(f"DEBUG: BookkeeperComponentReviewView - Component: {component}, PK: {pk}")
         
         # Verify user is a bookkeeper
         if request.user.user_level != 'bookkeeper':
@@ -2533,29 +2604,24 @@ class BookkeeperComponentReviewView(APIView):
                           status=status.HTTP_403_FORBIDDEN)
             
         liquidation = get_object_or_404(Liquidation, pk=pk)
-        print(f"DEBUG: Liquidation found - ID: {liquidation.id}, Status: {liquidation.status}")
-        print(f"DEBUG: Submitted components - ATR: {bool(liquidation.after_travel_report)}, COT: {bool(liquidation.certificate_of_travel)}, COA: {bool(liquidation.certificate_of_appearance)}")
         
         # Verify liquidation is in the correct state
         if liquidation.status not in ['Under Pre-Audit', 'Pending', 'Under Final Audit']:
-            print(f"DEBUG: Status check failed - Status: {liquidation.status} not in allowed states")
             return Response({"error": f"Liquidation is not in a reviewable state. Current status: {liquidation.status}"}, 
                           status=status.HTTP_400_BAD_REQUEST)
         else:
-            print(f"DEBUG: Status check passed - Status: {liquidation.status} is reviewable")
+            pass
 
         # Validate component type
         valid_components = ['after_travel_report', 'certificate_of_travel', 'certificate_of_appearance']
         if component not in valid_components:
-            print(f"DEBUG: Invalid component type - {component}")
             return Response({"error": "Invalid component type"}, 
                           status=status.HTTP_400_BAD_REQUEST)
         else:
-            print(f"DEBUG: Component type validation passed - {component}")
+            pass
 
         approve = request.data.get('approve', False)
         comment = request.data.get('comment', '')
-        print(f"DEBUG: Approve: {approve}, Comment: {comment}")
 
         # Check if the component was actually submitted
         component_submitted = False
@@ -2566,65 +2632,50 @@ class BookkeeperComponentReviewView(APIView):
         elif component == 'certificate_of_appearance' and liquidation.certificate_of_appearance:
             component_submitted = True
         
-        print(f"DEBUG: Component {component} submitted: {component_submitted}")
         
         if not component_submitted:
             return Response({"error": f"Component {component} was not submitted"}, 
                           status=status.HTTP_400_BAD_REQUEST)
 
         # Bookkeeper can review any component status
-        print(f"DEBUG: Bookkeeper can review any component status - {component}")
 
         # Update component status
         status_field = f"{component}_status"
         comment_field = f"{component}_bookkeeper_comment"
-        print(f"DEBUG: Status field: {status_field}, Comment field: {comment_field}")
         
         try:
             if approve:
                 setattr(liquidation, status_field, 'bookkeeper_approved')
-                print(f"DEBUG: Set {status_field} to bookkeeper_approved")
             else:
                 setattr(liquidation, status_field, 'bookkeeper_rejected')
-                print(f"DEBUG: Set {status_field} to bookkeeper_rejected")
                 if not comment:
                     return Response({"error": "Comment is required when rejecting a component"}, 
                                   status=status.HTTP_400_BAD_REQUEST)
             
             setattr(liquidation, comment_field, comment)
-            print(f"DEBUG: Set {comment_field} to: {comment}")
         except AttributeError as e:
             # Handle case where new fields don't exist yet (migration not run)
-            print(f"DEBUG: Field {status_field} or {comment_field} doesn't exist yet. Error: {e}")
             # For now, just update the main status
             if approve:
                 liquidation.status = 'Under Final Audit'
-                print("DEBUG: Set main status to Under Final Audit")
             else:
                 liquidation.status = 'Rejected'
                 liquidation.bookkeeper_comment = comment
-                print("DEBUG: Set main status to Rejected")
         except Exception as e:
-            print(f"DEBUG: Unexpected error setting fields: {e}")
             return Response({"error": f"Failed to update component status: {str(e)}"}, 
                           status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         
         liquidation.reviewed_by_bookkeeper = request.user
         liquidation.reviewed_at_bookkeeper = timezone.now()
-        print(f"DEBUG: Set reviewer to {request.user.email}")
         
         # Save the liquidation with updated fields
         liquidation.save()
-        print(f"DEBUG: Saved liquidation with updated fields")
         
         try:
             liquidation.update_status()
-            print(f"DEBUG: update_status completed successfully")
         except Exception as e:
-            print(f"DEBUG: update_status failed: {e}")
             # Fallback: just save the liquidation
             liquidation.save()
-            print(f"DEBUG: Liquidation saved as fallback")
         
         # Send notifications
         component_display_name = component.replace("_", " ").title()
@@ -2638,9 +2689,8 @@ class BookkeeperComponentReviewView(APIView):
                     title=f'{component_display_name} Approved by Bookkeeper',
                     message=f'Your {component_display_name.lower()} for travel order {liquidation.travel_order.travel_order_number} has been approved by the bookkeeper.'
                 )
-                print(f"DEBUG: Employee notified of {component_display_name} approval successfully")
             except Exception as e:
-                print(f"DEBUG: Error notifying employee of approval: {e}")
+                pass
                 # Don't fail the approval if notification fails
             
             # Check if all SUBMITTED components are now approved by bookkeeper
@@ -2656,18 +2706,14 @@ class BookkeeperComponentReviewView(APIView):
                 
                 # All submitted components must be approved
                 all_approved = all(submitted_components) if submitted_components else False
-                print(f"DEBUG: Submitted components check - {submitted_components}, all_approved: {all_approved}")
             except AttributeError as e:
-                print(f"DEBUG: AttributeError checking component status: {e}")
                 # If new fields don't exist, assume approved if status is Under Final Audit
                 all_approved = liquidation.status == 'Under Final Audit'
             
             if all_approved:
-                print("DEBUG: All submitted components approved, notifying accountants")
                 # Notify accountants
                 try:
                     accountants = CustomUser.objects.filter(user_level='accountant')
-                    print(f"DEBUG: Found {accountants.count()} accountants to notify")
                     for accountant in accountants:
                         create_notification(
                             user=accountant,
@@ -2676,9 +2722,8 @@ class BookkeeperComponentReviewView(APIView):
                             title=f'Liquidation Ready for Review',
                             message=f'Liquidation for travel order {liquidation.travel_order.travel_order_number} is ready for final review.'
                         )
-                    print("DEBUG: Accountants notified successfully")
                 except Exception as e:
-                    print(f"DEBUG: Error notifying accountants: {e}")
+                    pass
                     # Don't fail the approval if notification fails
         else:
             # Notify employee about rejection
@@ -2690,20 +2735,16 @@ class BookkeeperComponentReviewView(APIView):
                     title=f'Component Rejected',
                     message=f'Your {component.replace("_", " ")} for travel order {liquidation.travel_order.travel_order_number} has been rejected. Reason: {comment}'
                 )
-                print("DEBUG: Employee notified of rejection successfully")
             except Exception as e:
-                print(f"DEBUG: Error notifying employee of rejection: {e}")
+                pass
                 # Don't fail the rejection if notification fails
         
         # Get component status safely
         try:
             component_status = getattr(liquidation, status_field)
-            print(f"DEBUG: Retrieved component status: {component_status}")
         except AttributeError:
             component_status = 'bookkeeper_approved' if approve else 'bookkeeper_rejected'
-            print(f"DEBUG: Using fallback component status: {component_status}")
         
-        print(f"DEBUG: Returning success response for component {component}")
         return Response({
             'message': f'Component {component} {"approved" if approve else "rejected"} successfully.',
             'status': 'success',
@@ -2760,7 +2801,7 @@ class AccountantReviewView(APIView):
                         original_total += float(itinerary.total_amount)
                 original_total = round(original_total, 2)
             except Exception as e:
-                print(f"DEBUG: Error calculating original total: {e}")
+                pass
             
             # Get final amount (if modified by accountant)
             final_amount = liquidation.final_amount
@@ -2823,14 +2864,11 @@ class AccountantComponentReviewView(APIView):
         status_field = f"{component}_status"
         try:
             current_status = getattr(liquidation, status_field)
-            print(f"DEBUG: Current status for {component}: {current_status}")
         except AttributeError as e:
-            print(f"DEBUG: AttributeError getting {status_field}: {e}")
             return Response({"error": f"Component status field {status_field} does not exist. Please run migrations."}, 
                           status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         
         # Accountant can review any component status
-        print(f"DEBUG: Accountant can review any component status - {component}, current status: {current_status}")
 
         approve = request.data.get('approve', False)
         comment = request.data.get('comment', '')
@@ -2838,11 +2876,8 @@ class AccountantComponentReviewView(APIView):
         try:
             if approve:
                 setattr(liquidation, status_field, 'accountant_approved')
-                print(f"DEBUG: Set {status_field} to accountant_approved")
-                print(f"DEBUG: Before save - {status_field}: {getattr(liquidation, status_field)}")
             else:
                 setattr(liquidation, status_field, 'accountant_rejected')
-                print(f"DEBUG: Set {status_field} to accountant_rejected")
                 if not comment:
                     return Response({"error": "Comment is required when rejecting a component"}, 
                                   status=status.HTTP_400_BAD_REQUEST)
@@ -2850,23 +2885,17 @@ class AccountantComponentReviewView(APIView):
             # Update accountant comment
             comment_field = f"{component}_accountant_comment"
             setattr(liquidation, comment_field, comment)
-            print(f"DEBUG: Set {comment_field} to: {comment}")
             
             liquidation.reviewed_by_accountant = request.user
             liquidation.reviewed_at_accountant = timezone.now()
             
             # Save the liquidation with updated fields
             liquidation.save()
-            print(f"DEBUG: Saved liquidation with updated fields")
-            print(f"DEBUG: After save - {status_field}: {getattr(liquidation, status_field)}")
             
             liquidation.update_status()
-            print(f"DEBUG: Updated liquidation status to: {liquidation.status}")
-            print(f"DEBUG: After update - ATR: {liquidation.after_travel_report_status}, COT: {liquidation.certificate_of_travel_status}, COA: {liquidation.certificate_of_appearance_status}")
             
             # Final verification - reload from database
             liquidation.refresh_from_db()
-            print(f"DEBUG: After refresh from DB - {status_field}: {getattr(liquidation, status_field)}")
             
             # Send notifications BEFORE returning
             if approve:
@@ -2882,15 +2911,11 @@ class AccountantComponentReviewView(APIView):
                     
                     # All submitted components must be approved
                     all_approved = all(submitted_components_status_checks) if submitted_components_status_checks else False
-                    print(f"DEBUG: Checking if all approved - submitted_components_status_checks: {submitted_components_status_checks}, all_approved: {all_approved}")
                 except AttributeError as e:
-                    print(f"DEBUG: AttributeError checking component status: {e}")
                     # If new fields don't exist, assume approved if status is Ready for Claim
                     all_approved = liquidation.status == 'Ready for Claim'
-                    print(f"DEBUG: Fallback check - status: {liquidation.status}, all_approved: {all_approved}")
                 
                 if all_approved:
-                    print(f"DEBUG: All components approved! Sending notification email...")
                     # Calculate original grand total from itinerary
                     original_total = 0
                     try:
@@ -2900,13 +2925,11 @@ class AccountantComponentReviewView(APIView):
                             if itinerary.total_amount:
                                 original_total += float(itinerary.total_amount)
                         original_total = round(original_total, 2)
-                        print(f"DEBUG: Calculated original_total: {original_total}")
                     except Exception as e:
-                        print(f"DEBUG: Error calculating original total: {e}")
+                        pass
                     
                     # Get final amount (if modified by accountant)
                     final_amount = liquidation.final_amount
-                    print(f"DEBUG: Final amount from liquidation: {final_amount}")
                     
                     # Create message with amount information
                     if final_amount and float(final_amount) != original_total:
@@ -2915,7 +2938,6 @@ class AccountantComponentReviewView(APIView):
                         message = f'Your liquidation for travel order {liquidation.travel_order.travel_order_number} has been approved and is ready for claim.\n\nFinal Amount: ₱{original_total:,.2f}'
                     
                     # Notify employee that liquidation is ready for claim
-                    print(f"DEBUG: Calling create_notification for user: {liquidation.uploaded_by.email}")
                     create_notification(
                         user=liquidation.uploaded_by,
                         travel_order=liquidation.travel_order,
@@ -2924,9 +2946,8 @@ class AccountantComponentReviewView(APIView):
                         message=message,
                         liquidation=liquidation  # Pass liquidation for email template
                     )
-                    print(f"DEBUG: Notification created and email sent (if successful)")
                 else:
-                    print(f"DEBUG: Not all components approved yet. Status checks: {submitted_components_status_checks if 'submitted_components_status_checks' in locals() else 'N/A'}")
+                    pass
             
             # Handle rejection notification
             if not approve:
@@ -2944,11 +2965,9 @@ class AccountantComponentReviewView(APIView):
                 'status': 'success'
             }, status=status.HTTP_200_OK)
         except AttributeError as e:
-            print(f"DEBUG: AttributeError setting fields: {e}")
             return Response({"error": f"Component status fields do not exist. Please run migrations. Error: {str(e)}"}, 
                           status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         except Exception as e:
-            print(f"DEBUG: Unexpected error: {e}")
             return Response({"error": f"Unexpected error: {str(e)}"}, 
                           status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
@@ -2998,7 +3017,7 @@ class UpdateFinalAmountView(APIView):
                         original_amount += float(itinerary.total_amount)
                 original_amount = round(original_amount, 2)
             except Exception as e:
-                print(f"DEBUG: Error calculating original amount for audit log: {e}")
+                pass
             
             # Update final amount
             liquidation.final_amount = final_amount
@@ -3154,17 +3173,18 @@ class UpdateCertificateOfTravelView(APIView):
         # Update the certificate of travel
         cert = liquidation.certificate_of_travel
         
+        # Handle respectfully_submitted separately (ManyToMany)
+        if 'respectfully_submitted' in request.data:
+            user_ids = json.loads(request.data['respectfully_submitted'])
+            cert.respectfully_submitted.set(user_ids)
+
         # Update basic fields
-        for field in ['agency_head', 'fund_cluster', 'station', 'travel_order_number', 
-                     'date_travel_from', 'date_travel_to', 'approved', 'deviation_types',
-                     'explanations_justifications', 'evidence_type', 'refund_amount',
-                     'or_number', 'or_date']:
+        for field in ['agency_head', 'fund_cluster', 'station', 'travel_order_number',
+                     'date_travel_from', 'date_travel_to', 'recommending_approval', 'approved',
+                     'deviation_types', 'explanations_justifications', 'evidence_type',
+                     'refund_amount', 'or_number', 'or_date']:
             if field in request.data:
-                if field == 'respectfully_submitted':
-                    # Handle many-to-many field
-                    user_ids = json.loads(request.data[field])
-                    cert.respectfully_submitted.set(user_ids)
-                elif field == 'agency_head':
+                if field == 'agency_head':
                     # Handle foreign key relationship
                     if request.data[field]:
                         try:
@@ -3172,6 +3192,13 @@ class UpdateCertificateOfTravelView(APIView):
                             cert.agency_head = agency_head
                         except CustomUser.DoesNotExist:
                             return Response({'error': f'Agency head with ID {request.data[field]} not found'}, status=400)
+                elif field == 'recommending_approval':
+                    if request.data[field]:
+                        try:
+                            rec_user = CustomUser.objects.get(id=request.data[field])
+                            cert.recommending_approval = rec_user
+                        except CustomUser.DoesNotExist:
+                            return Response({'error': f'Recommending approval user with ID {request.data[field]} not found'}, status=400)
                 elif field == 'approved':
                     # Handle foreign key relationship
                     if request.data[field]:
@@ -3267,7 +3294,7 @@ class UpdateCertificateOfAppearanceView(APIView):
                     message=f'Certificate of appearance for travel order {liquidation.travel_order.travel_order_number} has been resubmitted and is ready for your review.'
                 )
         except Exception as e:
-            print(f"DEBUG: Error notifying bookkeepers: {e}")
+            pass
             # Don't fail the update if notification fails
         
         return Response({
@@ -5539,23 +5566,12 @@ class TravelOrderPDFDataView(APIView):
             pdf_itineraries = None
             previous_approver_signature = None
             
-            # Debug: Check all signatures for this travel order
-            all_employee_signatures = EmployeeSignature.objects.filter(order=travel_order)
-            all_head_signatures = Signature.objects.filter(order=travel_order)
-            print(f"DEBUG: Travel order status: {travel_order.status}")
-            print(f"DEBUG: Travel order approval stage: {travel_order.approval_stage}")
-            print(f"DEBUG: Travel order current approver: {travel_order.current_approver}")
-            print(f"DEBUG: All employee signatures for order {travel_order.id}: {list(all_employee_signatures.values('signed_by__email', 'signature_photo'))}")
-            print(f"DEBUG: All head signatures for order {travel_order.id}: {list(all_head_signatures.values('signed_by__email', 'signature_photo'))}")
-            
             # Get all approval snapshots, ordered by approval stage
+            # Old snapshots are always deleted on resubmission, so any existing snapshot
+            # is guaranteed to belong to the current approval round.
             snapshots = TravelOrderApprovalSnapshot.objects.filter(travel_order=travel_order).order_by('approval_stage')
             
-            # Check if this is a resubmission (status contains "resubmitted" and approval stage is 0)
-            is_resubmission = 'resubmitted' in travel_order.status.lower() and travel_order.approval_stage == 0
-            print(f"DEBUG: Is resubmission: {is_resubmission} (status: {travel_order.status}, stage: {travel_order.approval_stage})")
-            
-            if snapshots.exists() and not is_resubmission:
+            if snapshots.exists():
                 # If there are approvals and it's NOT a resubmission, show the data from the most recent approval
                 latest_snapshot = snapshots.last()
                 pdf_data = latest_snapshot.approved_data.copy()  # Create a copy to avoid modifying the original
@@ -5576,11 +5592,8 @@ class TravelOrderPDFDataView(APIView):
                     signed_by=latest_snapshot.approved_by
                 ).order_by('-signed_at').first()  # Get the most recent signature by this approver
                 
-                print(f"DEBUG: Looking for signature by {latest_snapshot.approved_by} for order {travel_order.id}")
-                print(f"DEBUG: Found approver signature: {approver_signature}")
                 
                 if approver_signature:
-                    print(f"DEBUG: Approver signature file: {approver_signature.signature_photo}")
                     previous_approver_signature = {
                         'signed_by': {
                             'full_name': approver_signature.signed_by.get_full_name(),
@@ -5588,9 +5601,8 @@ class TravelOrderPDFDataView(APIView):
                         },
                         'signature_photo': approver_signature.signature_photo.url if approver_signature.signature_photo else None
                     }
-                    print(f"DEBUG: Previous approver signature set: {previous_approver_signature}")
                 else:
-                    print("DEBUG: No approver signature found")
+                    pass
             else:
                 # No approvals yet, show the original employee data
                 pdf_data = {
@@ -5615,10 +5627,7 @@ class TravelOrderPDFDataView(APIView):
                 
                 # Get employee's signature - get the most recent one (for resubmissions)
                 employee_signature = EmployeeSignature.objects.filter(order=travel_order).order_by('-signed_at').first()
-                print(f"DEBUG: Employee signature found (most recent): {employee_signature}")
                 if employee_signature:
-                    print(f"DEBUG: Employee signature file: {employee_signature.signature_photo}")
-                    print(f"DEBUG: Employee signature date: {employee_signature.signed_at}")
                     previous_approver_signature = {
                         'signed_by': {
                             'full_name': employee_signature.signed_by.get_full_name(),
@@ -5644,6 +5653,29 @@ class TravelOrderPDFDataView(APIView):
                         'total': float(itinerary.total_amount) if itinerary.total_amount else 0
                     })
             
+            # Inject Regional Director name/position for PDF signatory
+            director_name, director_position = get_regional_director_for_pdf()
+            pdf_data['director_name'] = director_name
+            pdf_data['director_position'] = director_position
+            pdf_data['regional_director_name'] = director_name
+            pdf_data['regional_director_position'] = director_position
+            pdf_data['agency_head_name'] = director_name
+            pdf_data['agency_head_position'] = director_position
+            pdf_data.setdefault('travel_order_number', travel_order.travel_order_number or '')
+            pdf_data['director_travel_classification'] = travel_order.director_travel_classification
+
+            # Inject left signatory based on filer's employee_type / user_level
+            filer = travel_order.prepared_by
+            if filer:
+                show_left, left_name, left_pos = get_left_signatory_by_type(
+                    filer.employee_type or '', filer.user_level or 'employee'
+                )
+            else:
+                show_left, left_name, left_pos = False, '', ''
+            pdf_data['left_signatory_show'] = show_left
+            pdf_data['left_signatory_name'] = left_name
+            pdf_data['left_signatory_position'] = left_pos
+
             return Response({
                 'travel_order_data': pdf_data,
                 'itineraries': pdf_itineraries,
@@ -5653,3 +5685,35 @@ class TravelOrderPDFDataView(APIView):
         except Exception as e:
             return Response({'error': str(e)}, status=500)
 
+
+class SignatoryInfoView(APIView):
+    """Returns director and conditional left signatory info for PDF generation."""
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        director_name, director_position = get_regional_director_for_pdf()
+
+        employee_type = request.query_params.get('employee_type', '')
+        user_level = request.query_params.get('user_level', 'employee')
+        show_left, left_name, left_pos = (False, '', '')
+        if employee_type:
+            show_left, left_name, left_pos = get_left_signatory_by_type(employee_type, user_level)
+
+        return Response({
+            'resolved_name': director_name,
+            'resolved_position': director_position,
+            'left_signatory_show': show_left,
+            'left_signatory_name': left_name,
+            'left_signatory_position': left_pos,
+        })
+
+
+class NextTravelOrderNumberView(APIView):
+    """Returns the next travel order number that would be generated, without saving it.
+    Used by the frontend PDF preview so the number is visible before actual submission."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from .utils import generate_travel_order_number
+        next_number = generate_travel_order_number()
+        return Response({'travel_order_number': next_number})

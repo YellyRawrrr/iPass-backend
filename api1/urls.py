@@ -17,7 +17,7 @@ from .views import (
     AfterTravelReportView, AuditLogListView, BackupListView, BackupDetailView, download_backup,
     RestoreListView, RestoreDetailView, ReportsAPIView,
     LiquidationReviewerView, LiquidationReviewerHistoryView, LiquidationComponentReviewView, UpdateLiquidationReviewerView,
-    TravelOrderSignaturesView, TravelOrderPDFDataView,
+    TravelOrderSignaturesView, TravelOrderPDFDataView, SignatoryInfoView, NextTravelOrderNumberView,
     login_view, logout_view,
     refresh_token_view, protected_view, download_evidence, change_password_view
 )
@@ -50,6 +50,7 @@ urlpatterns = [
     path('travel-itinerary/<int:travel_order_id>/', TravelOrderItineraryView.as_view(), name='travel-order-itineraries'),
     path('travel-orders/<int:travel_order_id>/signatures/', TravelOrderSignaturesView.as_view(), name='travel-order-signatures'),
     path('travel-orders/<int:travel_order_id>/pdf-data/', TravelOrderPDFDataView.as_view(), name='travel-order-pdf-data'),
+    path('next-travel-order-number/', NextTravelOrderNumberView.as_view(), name='next-travel-order-number'),
     
     #travels settings
     path('funds/', FundListCreateView.as_view(), name='funds'),
@@ -148,5 +149,8 @@ urlpatterns = [
     path('backups/<int:pk>/download/', download_backup, name='download-backup'),
     path('restores/', RestoreListView.as_view(), name='restore-list'),
     path('restores/<int:pk>/', RestoreDetailView.as_view(), name='restore-detail'),
+
+    # Diagnostic
+    path('signatory-info/', SignatoryInfoView.as_view(), name='signatory-info'),
     
 ]

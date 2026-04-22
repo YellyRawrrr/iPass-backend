@@ -304,6 +304,38 @@ class TravelOrderSerializer(serializers.ModelSerializer):
                 total += float(itinerary.total_amount)
         return round(total, 2)
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        try:
+            from .utils import get_regional_director_for_pdf, get_left_signatory_by_type
+            director_name, director_position = get_regional_director_for_pdf()
+            data['director_name'] = director_name
+            data['director_position'] = director_position
+            data['regional_director_name'] = director_name
+            data['regional_director_position'] = director_position
+            data['agency_head_name'] = director_name
+            data['agency_head_position'] = director_position
+
+            # Left signatory based on filer's employee_type and user_level
+            filer = instance.prepared_by
+            emp_type = getattr(filer, 'employee_type', '') or ''
+            u_level = getattr(filer, 'user_level', 'employee') or 'employee'
+            show_left, left_name, left_pos = get_left_signatory_by_type(emp_type, u_level)
+            data['left_signatory_show'] = show_left
+            data['left_signatory_name'] = left_name
+            data['left_signatory_position'] = left_pos
+        except Exception as e:
+            data['director_name'] = ''
+            data['director_position'] = ''
+            data['regional_director_name'] = ''
+            data['regional_director_position'] = ''
+            data['agency_head_name'] = ''
+            data['agency_head_position'] = ''
+            data['left_signatory_show'] = False
+            data['left_signatory_name'] = ''
+            data['left_signatory_position'] = ''
+        return data
+
     def get_evidence(self, obj):
         if obj.evidence:
             from django.conf import settings
@@ -521,7 +553,13 @@ class TravelOrderSimpleSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = TravelOrder
-        fields = ['id', 'travel_order_number', 'destination', 'distance', 'date_travel_from', 'date_travel_to', 'date_of_filing', 'fund_cluster', 'purpose', 'purpose_name', 'specific_role', 'specific_role_name', 'official_station', 'employee_names', 'employees', 'prepared_by_name', 'office', 'itinerary', 'approvals', 'employee_signature']
+        fields = [
+            'id', 'travel_order_number', 'destination', 'distance', 'date_travel_from', 'date_travel_to',
+            'date_of_filing', 'fund_cluster', 'purpose', 'purpose_name', 'specific_role', 'specific_role_name',
+            'official_station', 'employee_names', 'employees', 'prepared_by_name', 'office', 'itinerary',
+            'approvals', 'employee_signature', 'status', 'current_approver',
+            'director_travel_classification',
+        ]
     
     def get_prepared_by_name(self, obj):
         if obj.prepared_by:
@@ -598,6 +636,9 @@ class CertificateOfTravelSerializer(serializers.ModelSerializer):
     respectfully_submitted = serializers.PrimaryKeyRelatedField(many=True, queryset=CustomUser.objects.all(), required=False)
     respectfully_submitted_names = serializers.SerializerMethodField()
     respectfully_submitted_positions = serializers.SerializerMethodField()
+    recommending_approval = serializers.PrimaryKeyRelatedField(queryset=CustomUser.objects.all(), allow_null=True, required=False)
+    recommending_approval_name = serializers.CharField(source='recommending_approval.full_name', read_only=True)
+    recommending_approval_position = serializers.SerializerMethodField()
     approved = serializers.PrimaryKeyRelatedField(queryset=CustomUser.objects.all(), allow_null=True, required=False)
     approved_name = serializers.CharField(source='approved.full_name', read_only=True)
     approved_position = serializers.SerializerMethodField()
@@ -628,6 +669,11 @@ class CertificateOfTravelSerializer(serializers.ModelSerializer):
     def get_respectfully_submitted_positions(self, obj):
         return [user.employee_position.position_name if user.employee_position else 'No position' for user in obj.respectfully_submitted.all()]
     
+    def get_recommending_approval_position(self, obj):
+        if obj.recommending_approval and obj.recommending_approval.employee_position:
+            return obj.recommending_approval.employee_position.position_name
+        return 'No position'
+
     def get_approved_position(self, obj):
         if obj.approved and obj.approved.employee_position:
             return obj.approved.employee_position.position_name
@@ -674,10 +720,10 @@ class LiquidationSerializer(serializers.ModelSerializer):
     reviewed_by_bookkeeper_name = serializers.SerializerMethodField()
     reviewed_by_accountant_name = serializers.SerializerMethodField()
     
-    # Component status summary
+    
     component_status_summary = serializers.SerializerMethodField()
 
-    # Explicit file fields for better control and frontend usability
+    
     certificate_of_appearance = serializers.SerializerMethodField()
     
     # Signature photo fields
@@ -701,7 +747,7 @@ class LiquidationSerializer(serializers.ModelSerializer):
             else:
                 return None
         except:
-            # Handle broken relationships
+            
             return {
                 'id': None,
                 'travel_order_number': 'Travel Order Deleted',
